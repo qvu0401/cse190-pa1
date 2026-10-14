@@ -3,7 +3,6 @@ from pathlib import Path
 from uuid import uuid4, UUID
 from datetime import timezone
 import os
-import psycopg
 import sqlite3
 from contextlib import contextmanager
 
