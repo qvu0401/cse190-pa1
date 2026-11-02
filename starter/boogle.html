@@ -18,6 +18,10 @@
        color: #666; margin: 2.5rem 0 0.5rem; }
   ul { list-style: none; margin: 0; padding: 0; }
   li { padding: 0.5rem 0; border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
+  .ad { margin: 2rem 0 0; }
+  .ad iframe { display: block; border: 1px solid #eee; border-radius: 6px; }
+  .ad small { display: block; color: #999; font-size: 0.7rem; letter-spacing: 0.08em;
+              text-transform: uppercase; margin-bottom: 0.25rem; }
 </style>
 </head>
 <body>
@@ -28,6 +32,13 @@
            spellcheck="false" placeholder="Search Boogle" aria-label="Search">
     <button type="submit" data-testid="go">Search</button>
   </form>
+  <div class="ad">
+    <small>Advertisement</small>
+    <!-- sandbox with no allow-same-origin and no allow-scripts: whatever the
+         winning DSP sent is shown, but it cannot run code or read this page. -->
+    <iframe data-testid="ad" src="/ad" width="300" height="250" title="Advertisement"
+            sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
+  </div>
   <h2>Your recent searches</h2>
   <ul id="history" data-testid="history"></ul>
 </main>
