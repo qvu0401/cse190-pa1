@@ -4,6 +4,7 @@ from uuid import uuid4, UUID
 from datetime import timezone
 import os
 import sqlite3
+import ssl
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, wait
 from decimal import Decimal, InvalidOperation
@@ -28,7 +29,9 @@ TMAX = 250
 
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
-http = urllib3.PoolManager(num_pools=4, maxsize=8, retries=False)
+http = urllib3.PoolManager(
+    num_pools=4, maxsize=8, retries=False, ssl_context=ssl.create_default_context()
+)
 
 @contextmanager
 def get_db_connection():
@@ -336,6 +339,9 @@ def ad():
         if not 200 <= response.status < 300:
             app.logger.warning("Billing notice failed for auction %s: HTTP %s", auction_id, response.status)
             return "", 200
+    except urllib3.exceptions.ReadTimeoutError as error:
+        # The DSP may have received and recorded the notice before timing out.
+        app.logger.warning("Billing outcome unknown for auction %s: %s", auction_id, error)
     except (OSError, urllib3.exceptions.HTTPError, ValueError) as error:
         app.logger.warning("Billing notice failed for auction %s: %s", auction_id, error)
         return "", 200

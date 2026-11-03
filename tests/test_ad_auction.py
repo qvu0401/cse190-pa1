@@ -1,11 +1,12 @@
 import importlib.util
+import copy
 import tempfile
 import json
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from urllib3.exceptions import ConnectTimeoutError
+from urllib3.exceptions import ConnectTimeoutError, ReadTimeoutError
 
 
 class AuctionTests(unittest.TestCase):
@@ -62,6 +63,14 @@ class AuctionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, b"")
 
+    def test_ad_is_shown_if_billing_response_times_out_after_request(self):
+        with patch.object(self.module, "collect_bids", side_effect=self.response), \
+             patch.object(self.module.http, "request", side_effect=ReadTimeoutError(None, "/bill", "timed out")):
+            response = self.client.get("/ad")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b"winner")
+
     def test_dsp_rejects_late_response(self):
         class BidResponse:
             status = 200
@@ -77,6 +86,24 @@ class AuctionTests(unittest.TestCase):
             )
 
         self.assertIsNone(response)
+
+    def test_invalid_bids_are_not_eligible(self):
+        good = self.response({"id": "auction"})[0]
+        for field, value in (("impid", "other"), ("w", 301), ("h", 251), ("price", 0.49)):
+            with self.subTest(field=field):
+                response = copy.deepcopy(good)
+                response["seatbid"][0]["bid"][0][field] = value
+                bids = list(self.module.valid_bids([response], "auction"))
+                self.assertEqual([bid["id"] for _, bid in bids], ["second"])
+        response = copy.deepcopy(good)
+        response["cur"] = "EUR"
+        self.assertEqual(list(self.module.valid_bids([response], "auction")), [])
+
+    def test_no_bids_returns_empty_response(self):
+        with patch.object(self.module, "collect_bids", return_value=[]):
+            response = self.client.get("/ad")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b"")
 
 
 if __name__ == "__main__":
