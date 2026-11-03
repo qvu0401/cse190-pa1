@@ -11,6 +11,7 @@ from functools import lru_cache
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 import json
+import logging
 import time
 
 import joblib
@@ -27,6 +28,7 @@ BID_FLOOR = Decimal("0.50")
 TMAX = 250
 
 app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
 
 @contextmanager
 def get_db_connection():
@@ -188,8 +190,10 @@ def get_segments_for_client(client_id):
 
 
 def request_dsp(name, payload, deadline):
+    auction_id = json.loads(payload)["id"]
     remaining = deadline - time.monotonic()
     if remaining <= 0:
+        app.logger.info("Auction %s DSP %s: deadline expired before request", auction_id, name)
         return None
     req = Request(
         f"{RTB_URL}/{name}/bid", data=payload,
@@ -198,12 +202,15 @@ def request_dsp(name, payload, deadline):
     try:
         with urlopen(req, timeout=remaining) as response:
             if response.status != 200:
+                app.logger.info("Auction %s DSP %s: HTTP %s", auction_id, name, response.status)
                 return None
             body = response.read()
         if time.monotonic() > deadline:
+            app.logger.info("Auction %s DSP %s: response arrived after deadline", auction_id, name)
             return None
         return json.loads(body)
-    except (OSError, URLError, ValueError):
+    except (OSError, URLError, ValueError) as error:
+        app.logger.info("Auction %s DSP %s: request or response failed: %s", auction_id, name, error)
         return None
 
 
@@ -299,17 +306,23 @@ def ad():
     responses = collect_bids(bid_request)
     # Recheck after bidding in case feedback arrived during the auction.
     blocked_domains, blocked_creatives = blocked_advertisers()
+    valid = list(valid_bids(responses, auction_id))
     bids = sorted(
-        (item for item in valid_bids(responses, auction_id)
+        (item for item in valid
          if not is_blocked_bid(item[1], blocked_domains, blocked_creatives)),
         key=lambda item: item[0], reverse=True,
     )
     if not bids:
+        app.logger.info("Auction %s: responses=%d valid_prices=%s eligible_prices=[]",
+                        auction_id, len(responses), [str(price) for price, _ in valid])
         return "", 200
 
     winning_price, winner = bids[0]
     second_price = bids[1][0] if len(bids) > 1 else BID_FLOOR
     price = min(winning_price, max(second_price, BID_FLOOR) + Decimal("0.01"))
+    app.logger.info("Auction %s: responses=%d valid_prices=%s eligible_prices=%s clearing_price=%s",
+                    auction_id, len(responses), [str(amount) for amount, _ in valid],
+                    [str(amount) for amount, _ in bids], price)
 
     with get_db_connection() as conn:
         conn.execute(
@@ -320,10 +333,11 @@ def ad():
 
     billing_url = winner["burl"].replace("${AUCTION_PRICE}", str(price))
     try:
-        with urlopen(billing_url, timeout=1) as response:
+        with urlopen(billing_url, timeout=5) as response:
             response.read()
     except (OSError, URLError, ValueError) as error:
         app.logger.warning("Billing notice failed for auction %s: %s", auction_id, error)
+        return "", 200
 
     return winner["adm"], 200, {"Content-Type": "text/html; charset=utf-8"}
 
