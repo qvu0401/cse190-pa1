@@ -1,9 +1,11 @@
 import importlib.util
 import tempfile
+import json
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from urllib.error import URLError
+from urllib3.exceptions import ConnectTimeoutError
 
 
 class AuctionTests(unittest.TestCase):
@@ -37,21 +39,16 @@ class AuctionTests(unittest.TestCase):
         calls = []
 
         class BillingResponse:
-            def __enter__(self):
-                return self
+            status = 204
 
-            def __exit__(self, *args):
-                pass
-
-            def read(self):
-                return b""
-
-        def bill(url, timeout):
+        def bill(method, url, **kwargs):
+            self.assertEqual(method, "GET")
+            self.assertFalse(kwargs["retries"])
             calls.append(url)
             return BillingResponse()
 
         with patch.object(self.module, "collect_bids", side_effect=self.response), \
-             patch.object(self.module, "urlopen", side_effect=bill):
+             patch.object(self.module.http, "request", side_effect=bill):
             response = self.client.get("/ad")
 
         self.assertEqual(response.data, b"winner")
@@ -59,11 +56,27 @@ class AuctionTests(unittest.TestCase):
 
     def test_ad_is_not_shown_when_billing_fails(self):
         with patch.object(self.module, "collect_bids", side_effect=self.response), \
-             patch.object(self.module, "urlopen", side_effect=URLError("unreachable")):
+             patch.object(self.module.http, "request", side_effect=ConnectTimeoutError("unreachable")):
             response = self.client.get("/ad")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, b"")
+
+    def test_dsp_rejects_late_response(self):
+        class BidResponse:
+            status = 200
+            data = b'{"id": "auction"}'
+
+        def delayed_response(*args, **kwargs):
+            time.sleep(0.02)
+            return BidResponse()
+
+        with patch.object(self.module.http, "request", side_effect=delayed_response):
+            response = self.module.request_dsp(
+                "steady", json.dumps({"id": "auction"}).encode(), time.monotonic() + 0.01
+            )
+
+        self.assertIsNone(response)
 
 
 if __name__ == "__main__":

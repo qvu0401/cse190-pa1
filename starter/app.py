@@ -8,13 +8,12 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, wait
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 import json
 import logging
 import time
 
 import joblib
+import urllib3
 
 
 HTML_FILE = Path(__file__).resolve().parent / "boogle.html"
@@ -29,6 +28,7 @@ TMAX = 250
 
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
+http = urllib3.PoolManager(num_pools=4, maxsize=8, retries=False)
 
 @contextmanager
 def get_db_connection():
@@ -195,21 +195,20 @@ def request_dsp(name, payload, deadline):
     if remaining <= 0:
         app.logger.info("Auction %s DSP %s: deadline expired before request", auction_id, name)
         return None
-    req = Request(
-        f"{RTB_URL}/{name}/bid", data=payload,
-        headers={"Content-Type": "application/json"}, method="POST",
-    )
     try:
-        with urlopen(req, timeout=remaining) as response:
-            if response.status != 200:
-                app.logger.info("Auction %s DSP %s: HTTP %s", auction_id, name, response.status)
-                return None
-            body = response.read()
+        response = http.request(
+            "POST", f"{RTB_URL}/{name}/bid", body=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=urllib3.Timeout(total=remaining), retries=False, redirect=False,
+        )
         if time.monotonic() > deadline:
             app.logger.info("Auction %s DSP %s: response arrived after deadline", auction_id, name)
             return None
-        return json.loads(body)
-    except (OSError, URLError, ValueError) as error:
+        if response.status != 200:
+            app.logger.info("Auction %s DSP %s: HTTP %s", auction_id, name, response.status)
+            return None
+        return json.loads(response.data)
+    except (OSError, urllib3.exceptions.HTTPError, ValueError) as error:
         app.logger.info("Auction %s DSP %s: request or response failed: %s", auction_id, name, error)
         return None
 
@@ -333,9 +332,11 @@ def ad():
 
     billing_url = winner["burl"].replace("${AUCTION_PRICE}", str(price))
     try:
-        with urlopen(billing_url, timeout=5) as response:
-            response.read()
-    except (OSError, URLError, ValueError) as error:
+        response = http.request("GET", billing_url, timeout=5, retries=False, redirect=False)
+        if not 200 <= response.status < 300:
+            app.logger.warning("Billing notice failed for auction %s: HTTP %s", auction_id, response.status)
+            return "", 200
+    except (OSError, urllib3.exceptions.HTTPError, ValueError) as error:
         app.logger.warning("Billing notice failed for auction %s: %s", auction_id, error)
         return "", 200
 
